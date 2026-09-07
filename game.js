@@ -146,10 +146,11 @@ class Asteroid {
 // ── Ship ──────────────────────────────────────────────────────────────────────
 class Ship {
   constructor() {
-    this.tripleShot = 0; // segundos restantes de disparo triple; no se reinicia en reset()
-    this.shield     = 0; // segundos restantes de escudo; no se reinicia en reset()
-    this.slowMotion = 0; // segundos restantes de cámara lenta; no se reinicia en reset()
-    this.novaBombs  = 0; // Bombas Nova en reserva; no se reinicia en reset() ni al morir (es inventario, no un efecto activo)
+    this.tripleShot  = 0; // segundos restantes de disparo triple; no se reinicia en reset()
+    this.shield      = 0; // segundos restantes de escudo; no se reinicia en reset()
+    this.slowMotion  = 0; // segundos restantes de cámara lenta; no se reinicia en reset()
+    this.hyperThrust = 0; // segundos restantes de hiperpropulsión; no se reinicia en reset()
+    this.novaBombs   = 0; // Bombas Nova en reserva; no se reinicia en reset() ni al morir (es inventario, no un efecto activo)
     this.reset();
   }
 
@@ -173,10 +174,13 @@ class Ship {
     if (this.tripleShot    > 0) this.tripleShot    -= dt;
     if (this.shield        > 0) this.shield        -= dt;
     if (this.slowMotion    > 0) this.slowMotion    -= dt;
+    if (this.hyperThrust   > 0) this.hyperThrust   -= dt;
 
-    const ROT   = 3.5;   // rad/s
-    const THRUST = 260;  // px/s²
-    const DRAG   = 0.987;
+    const ROT = 3.5; // rad/s: la rotación no cambia con la hiperpropulsión, solo el empuje
+    // Hiperpropulsión: empuje y velocidad máxima muy por encima de lo normal
+    // (menos fricción sostiene una velocidad terminal más alta) para esquivar con precisión.
+    const THRUST = this.hyperThrust > 0 ? 260 * HYPER_THRUST_MULT : 260; // px/s²
+    const DRAG   = this.hyperThrust > 0 ? HYPER_DRAG : 0.987;
 
     if (keys['ArrowLeft'])  this.angle -= ROT * dt;
     if (keys['ArrowRight']) this.angle += ROT * dt;
@@ -246,14 +250,25 @@ class Ship {
     ctx.closePath();
     ctx.stroke();
 
-    // Llama del propulsor
+    // Llama del propulsor: más larga y de color eléctrico durante la hiperpropulsión
     if (this.thrusting && Math.random() > 0.35) {
+      const boosting = this.hyperThrust > 0;
+      const flameLen = boosting ? rand(16, 28) : rand(6, 14);
       ctx.beginPath();
       ctx.moveTo(-8, -4);
-      ctx.lineTo(-8 - rand(6, 14), 0);
+      ctx.lineTo(-8 - flameLen, 0);
       ctx.lineTo(-8,  4);
-      ctx.strokeStyle = 'rgba(255, 130, 0, 0.85)';
+      ctx.strokeStyle = boosting ? 'rgba(198, 255, 77, 0.9)' : 'rgba(255, 130, 0, 0.85)';
       ctx.stroke();
+      if (boosting) {
+        // Segunda llama, más corta y fina: refuerza la sensación de empuje extra
+        ctx.beginPath();
+        ctx.moveTo(-8, -2);
+        ctx.lineTo(-8 - flameLen * 0.6, 0);
+        ctx.lineTo(-8,  2);
+        ctx.lineWidth = 1;
+        ctx.stroke();
+      }
     }
 
     ctx.restore();
@@ -292,17 +307,20 @@ class Particle {
   }
 }
 
-// ── Power-ups: Disparo Triple, Escudo Temporal, Cámara Lenta y Bomba Nova ───────
+// ── Power-ups: Disparo Triple, Escudo Temporal, Cámara Lenta, Bomba Nova e Hiperpropulsión ──
 const POWERUP_TTL          = 12;   // segundos en pantalla antes de desaparecer si no se recoge
 const DROP_CHANCE          = 0.18; // prob. de soltar un power-up al destruir un asteroide (antes de forzarlo)
 const TRIPLE_SHOT_DURATION = 15;   // segundos que dura el disparo triple tras recogerlo
 const SHIELD_DURATION      = 5;    // segundos que dura el escudo tras recogerlo (o hasta absorber un golpe)
 const SLOW_MOTION_DURATION = 6;    // segundos que dura la cámara lenta tras recogerla
 const SLOW_MOTION_FACTOR   = 0.5;  // multiplicador de velocidad de los asteroides durante la cámara lenta
+const HYPER_DURATION       = 8;    // segundos que dura la hiperpropulsión tras recogerla
+const HYPER_THRUST_MULT    = 2.3;  // multiplicador de aceleración durante la hiperpropulsión
+const HYPER_DRAG           = 0.996; // fricción reducida durante la hiperpropulsión: sube la velocidad máxima alcanzable
 const NOVA_DROP_CHANCE     = 0.035; // prob. de soltar la Bomba Nova al destruir un asteroide; sorteo aparte del trío de abajo, y más bajo porque es un ítem escaso
 const NOVA_MAX_HELD        = 1;    // de un solo uso: no se puede llevar más de una en reserva a la vez
 
-const POWERUP_TYPES = ['triple', 'shield', 'slowmo'];
+const POWERUP_TYPES = ['triple', 'shield', 'slowmo', 'hyper'];
 
 // Excluye `exclude` (el tipo del power-up anterior) del sorteo para que nunca
 // se repita el mismo tipo dos veces seguidas, manteniendo el resto al azar.
@@ -315,7 +333,7 @@ class PowerUp {
   constructor(x, y, type = 'triple') {
     this.x      = x;
     this.y      = y;
-    this.type   = type; // 'triple' | 'shield' | 'slowmo' | 'nova'
+    this.type   = type; // 'triple' | 'shield' | 'slowmo' | 'nova' | 'hyper'
     this.radius = 14;
     this.rot    = 0;
     this.pulse  = rand(0, Math.PI * 2);
@@ -335,6 +353,7 @@ class PowerUp {
     const color = this.type === 'shield' ? '#5ecbff'
                 : this.type === 'slowmo' ? '#b388ff'
                 : this.type === 'nova'   ? '#ff8a3d'
+                : this.type === 'hyper'  ? '#c6ff4d'
                 : '#fff';
     ctx.save();
     ctx.translate(this.x, this.y);
@@ -378,6 +397,18 @@ class PowerUp {
         ctx.lineTo(Math.cos(a) * 8, Math.sin(a) * 8);
         ctx.stroke();
       }
+    } else if (this.type === 'hyper') {
+      // Icono: doble flecha de avance rápido, sugiere velocidad extrema
+      ctx.beginPath();
+      ctx.moveTo(-6, -7);
+      ctx.lineTo( 1,  0);
+      ctx.lineTo(-6,  7);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(-1, -7);
+      ctx.lineTo( 6,  0);
+      ctx.lineTo(-1,  7);
+      ctx.stroke();
     } else {
       // Icono: tres marcas en abanico que sugieren el disparo triple
       for (const a of [-0.35, 0, 0.35]) {
@@ -455,9 +486,10 @@ function explode(x, y, count = 8) {
 function killShip() {
   explode(ship.x, ship.y, 14);
   ship.dead = true;
-  ship.tripleShot = 0; // morir cancela el disparo triple: se reaparece con disparo normal
-  ship.shield = 0;     // morir cancela el escudo: se reaparece sin escudo
-  ship.slowMotion = 0; // morir cancela la cámara lenta: se reaparece a velocidad normal
+  ship.tripleShot  = 0; // morir cancela el disparo triple: se reaparece con disparo normal
+  ship.shield      = 0; // morir cancela el escudo: se reaparece sin escudo
+  ship.slowMotion  = 0; // morir cancela la cámara lenta: se reaparece a velocidad normal
+  ship.hyperThrust = 0; // morir cancela la hiperpropulsión: se reaparece con empuje normal
   lives--;
   if (lives <= 0) {
     state = 'gameover';
@@ -589,6 +621,8 @@ function update(dt) {
         ship.slowMotion = SLOW_MOTION_DURATION;
       } else if (p.type === 'nova') {
         ship.novaBombs = Math.min(ship.novaBombs + 1, NOVA_MAX_HELD);
+      } else if (p.type === 'hyper') {
+        ship.hyperThrust = HYPER_DURATION;
       } else {
         ship.tripleShot = TRIPLE_SHOT_DURATION;
       }
@@ -640,6 +674,8 @@ function drawHUD() {
     indicators.push({ text: `ESCUDO  ${ship.shield.toFixed(1)}s`, color: 'rgba(93,203,255,0.85)' });
   if (ship.slowMotion > 0)
     indicators.push({ text: `CÁMARA LENTA  ${ship.slowMotion.toFixed(1)}s`, color: 'rgba(179,136,255,0.85)' });
+  if (ship.hyperThrust > 0)
+    indicators.push({ text: `HIPERPROPULSIÓN  ${ship.hyperThrust.toFixed(1)}s`, color: 'rgba(198,255,77,0.9)' });
   if (ship.novaBombs > 0)
     indicators.push({ text: `BOMBA NOVA LISTA — B`, color: 'rgba(255,138,61,0.9)' });
 
