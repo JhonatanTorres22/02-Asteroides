@@ -9,15 +9,6 @@ const H = 600;
 const keys = {};
 const justPressed = {};
 
-window.addEventListener('keydown', (e) => {
-  if (!keys[e.code]) justPressed[e.code] = true;
-  keys[e.code] = true;
-});
-
-window.addEventListener('keyup', (e) => {
-  keys[e.code] = false;
-});
-
 function pressed(code) {
   const val = justPressed[code];
   justPressed[code] = false;
