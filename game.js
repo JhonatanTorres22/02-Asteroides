@@ -148,6 +148,7 @@ class Ship {
   constructor() {
     this.tripleShot = 0; // segundos restantes de disparo triple; no se reinicia en reset()
     this.shield     = 0; // segundos restantes de escudo; no se reinicia en reset()
+    this.slowMotion = 0; // segundos restantes de cámara lenta; no se reinicia en reset()
     this.reset();
   }
 
@@ -170,6 +171,7 @@ class Ship {
     if (this.shootCooldown > 0) this.shootCooldown -= dt;
     if (this.tripleShot    > 0) this.tripleShot    -= dt;
     if (this.shield        > 0) this.shield        -= dt;
+    if (this.slowMotion    > 0) this.slowMotion    -= dt;
 
     const ROT   = 3.5;   // rad/s
     const THRUST = 260;  // px/s²
@@ -289,21 +291,28 @@ class Particle {
   }
 }
 
-// ── Power-ups: Disparo Triple y Escudo Temporal ─────────────────────────────────
+// ── Power-ups: Disparo Triple, Escudo Temporal y Cámara Lenta ───────────────────
 const POWERUP_TTL          = 12;   // segundos en pantalla antes de desaparecer si no se recoge
 const DROP_CHANCE          = 0.18; // prob. de soltar un power-up al destruir un asteroide (antes de forzarlo)
 const TRIPLE_SHOT_DURATION = 15;   // segundos que dura el disparo triple tras recogerlo
 const SHIELD_DURATION      = 5;    // segundos que dura el escudo tras recogerlo (o hasta absorber un golpe)
+const SLOW_MOTION_DURATION = 6;    // segundos que dura la cámara lenta tras recogerla
+const SLOW_MOTION_FACTOR   = 0.5;  // multiplicador de velocidad de los asteroides durante la cámara lenta
 
-function randomPowerUpType() {
-  return Math.random() < 0.5 ? 'triple' : 'shield';
+const POWERUP_TYPES = ['triple', 'shield', 'slowmo'];
+
+// Excluye `exclude` (el tipo del power-up anterior) del sorteo para que nunca
+// se repita el mismo tipo dos veces seguidas, manteniendo el resto al azar.
+function randomPowerUpType(exclude = null) {
+  const options = exclude ? POWERUP_TYPES.filter(t => t !== exclude) : POWERUP_TYPES;
+  return options[randInt(0, options.length - 1)];
 }
 
 class PowerUp {
   constructor(x, y, type = 'triple') {
     this.x      = x;
     this.y      = y;
-    this.type   = type; // 'triple' | 'shield'
+    this.type   = type; // 'triple' | 'shield' | 'slowmo'
     this.radius = 14;
     this.rot    = 0;
     this.pulse  = rand(0, Math.PI * 2);
@@ -320,7 +329,9 @@ class PowerUp {
 
   draw() {
     const scale = 1 + Math.sin(this.pulse * 5) * 0.12;
-    const color = this.type === 'shield' ? '#5ecbff' : '#fff';
+    const color = this.type === 'shield' ? '#5ecbff'
+                : this.type === 'slowmo' ? '#b388ff'
+                : '#fff';
     ctx.save();
     ctx.translate(this.x, this.y);
     ctx.scale(scale, scale);
@@ -343,6 +354,15 @@ class PowerUp {
       ctx.quadraticCurveTo(6, 7, 0, 9);
       ctx.quadraticCurveTo(-6, 7, -6, 3);
       ctx.lineTo(-6, -4);
+      ctx.closePath();
+      ctx.stroke();
+    } else if (this.type === 'slowmo') {
+      // Icono: reloj de arena, sugiere el paso lento del tiempo
+      ctx.beginPath();
+      ctx.moveTo(-6, -7);
+      ctx.lineTo(6, -7);
+      ctx.lineTo(-6, 7);
+      ctx.lineTo(6, 7);
       ctx.closePath();
       ctx.stroke();
     } else {
@@ -370,7 +390,8 @@ let ship, bullets, asteroids, particles, powerUps;
 let score, lives, level;
 let state;      // 'playing' | 'dead' | 'gameover'
 let deadTimer;
-let powerUpSpawnedThisLevel; // true en cuanto el power-up (disparo triple o escudo) ya apareció en el nivel actual
+let powerUpSpawnedThisLevel; // true en cuanto el power-up (disparo triple, escudo o cámara lenta) ya apareció en el nivel actual
+let lastPowerUpType; // tipo del último power-up generado; se excluye del siguiente sorteo para no repetir
 
 function spawnAsteroids(count) {
   const SAFE_DIST = 130;
@@ -395,6 +416,7 @@ function initGame() {
   level  = 1;
   state  = 'playing';
   powerUpSpawnedThisLevel = false;
+  lastPowerUpType = null;
   spawnAsteroids(4);
 }
 
@@ -420,6 +442,7 @@ function killShip() {
   ship.dead = true;
   ship.tripleShot = 0; // morir cancela el disparo triple: se reaparece con disparo normal
   ship.shield = 0;     // morir cancela el escudo: se reaparece sin escudo
+  ship.slowMotion = 0; // morir cancela la cámara lenta: se reaparece a velocidad normal
   lives--;
   if (lives <= 0) {
     state = 'gameover';
@@ -442,7 +465,8 @@ function update(dt) {
     deadTimer -= dt;
     particles.forEach(p => p.update(dt));
     particles = particles.filter(p => !p.dead);
-    asteroids.forEach(a => a.update(dt));
+    const asteroidDt = ship.slowMotion > 0 ? dt * SLOW_MOTION_FACTOR : dt;
+    asteroids.forEach(a => a.update(asteroidDt));
     powerUps.forEach(p => p.update(dt));
     powerUps = powerUps.filter(p => !p.dead);
     if (deadTimer <= 0) { state = 'playing'; ship.reset(); }
@@ -456,7 +480,9 @@ function update(dt) {
 
   ship.update(dt);
   bullets.forEach(b => b.update(dt));
-  asteroids.forEach(a => a.update(dt));
+  // Cámara lenta: los asteroides se mueven a mitad de velocidad, la nave no se ve afectada.
+  const asteroidDt = ship.slowMotion > 0 ? dt * SLOW_MOTION_FACTOR : dt;
+  asteroids.forEach(a => a.update(asteroidDt));
   particles.forEach(p => p.update(dt));
   powerUps.forEach(p => p.update(dt));
 
@@ -477,10 +503,11 @@ function update(dt) {
         newAsteroids.push(...a.split());
         lastKillPos = { x: a.x, y: a.y };
 
-        // Power-up (disparo triple o escudo, al azar): intento aleatorio por
-        // cada asteroide destruido (como mucho una vez por nivel).
+        // Power-up (disparo triple, escudo o cámara lenta, al azar): intento
+        // aleatorio por cada asteroide destruido (como mucho una vez por nivel).
         if (!powerUpSpawnedThisLevel && Math.random() < DROP_CHANCE) {
-          powerUps.push(new PowerUp(a.x, a.y, randomPowerUpType()));
+          lastPowerUpType = randomPowerUpType(lastPowerUpType);
+          powerUps.push(new PowerUp(a.x, a.y, lastPowerUpType));
           powerUpSpawnedThisLevel = true;
         }
       }
@@ -493,7 +520,8 @@ function update(dt) {
   // la posición del último asteroide destruido: garantiza al menos una
   // aparición por nivel.
   if (!powerUpSpawnedThisLevel && asteroids.length === 0 && lastKillPos) {
-    powerUps.push(new PowerUp(lastKillPos.x, lastKillPos.y, randomPowerUpType()));
+    lastPowerUpType = randomPowerUpType(lastPowerUpType);
+    powerUps.push(new PowerUp(lastKillPos.x, lastKillPos.y, lastPowerUpType));
     powerUpSpawnedThisLevel = true;
   }
 
@@ -521,6 +549,8 @@ function update(dt) {
       p.dead = true;
       if (p.type === 'shield') {
         ship.shield = SHIELD_DURATION;
+      } else if (p.type === 'slowmo') {
+        ship.slowMotion = SLOW_MOTION_DURATION;
       } else {
         ship.tripleShot = TRIPLE_SHOT_DURATION;
       }
@@ -564,22 +594,21 @@ function drawHUD() {
   for (let i = 0; i < lives; i++)
     drawLifeIcon(W - 16 - i * 22, 18);
 
-  // Indicador de disparo triple activo
-  if (ship.tripleShot > 0) {
-    ctx.textAlign = 'center';
-    ctx.fillStyle = 'rgba(255,255,255,0.85)';
-    ctx.font      = '13px monospace';
-    ctx.fillText(`DISPARO TRIPLE  ${ship.tripleShot.toFixed(1)}s`, W / 2, 46);
-  }
+  // Indicadores de power-ups activos, apilados verticalmente
+  const indicators = [];
+  if (ship.tripleShot > 0)
+    indicators.push({ text: `DISPARO TRIPLE  ${ship.tripleShot.toFixed(1)}s`, color: 'rgba(255,255,255,0.85)' });
+  if (ship.shield > 0)
+    indicators.push({ text: `ESCUDO  ${ship.shield.toFixed(1)}s`, color: 'rgba(93,203,255,0.85)' });
+  if (ship.slowMotion > 0)
+    indicators.push({ text: `CÁMARA LENTA  ${ship.slowMotion.toFixed(1)}s`, color: 'rgba(179,136,255,0.85)' });
 
-  // Indicador de escudo activo (debajo del de disparo triple si ambos coinciden)
-  if (ship.shield > 0) {
-    ctx.textAlign = 'center';
-    ctx.fillStyle = 'rgba(93,203,255,0.85)';
-    ctx.font      = '13px monospace';
-    const y = ship.tripleShot > 0 ? 64 : 46;
-    ctx.fillText(`ESCUDO  ${ship.shield.toFixed(1)}s`, W / 2, y);
-  }
+  ctx.textAlign = 'center';
+  ctx.font      = '13px monospace';
+  indicators.forEach((ind, i) => {
+    ctx.fillStyle = ind.color;
+    ctx.fillText(ind.text, W / 2, 46 + i * 18);
+  });
 }
 
 function drawOverlay(title, sub) {
@@ -601,6 +630,12 @@ function draw() {
   powerUps.forEach(p => p.draw());
   bullets.forEach(b => b.draw());
   ship.draw();
+
+  // Tinte sutil de pantalla mientras la cámara lenta está activa
+  if (ship.slowMotion > 0) {
+    ctx.fillStyle = 'rgba(140, 100, 255, 0.06)';
+    ctx.fillRect(0, 0, W, H);
+  }
 
   drawHUD();
 
