@@ -149,6 +149,7 @@ class Ship {
     this.tripleShot = 0; // segundos restantes de disparo triple; no se reinicia en reset()
     this.shield     = 0; // segundos restantes de escudo; no se reinicia en reset()
     this.slowMotion = 0; // segundos restantes de cámara lenta; no se reinicia en reset()
+    this.novaBombs  = 0; // Bombas Nova en reserva; no se reinicia en reset() ni al morir (es inventario, no un efecto activo)
     this.reset();
   }
 
@@ -291,13 +292,15 @@ class Particle {
   }
 }
 
-// ── Power-ups: Disparo Triple, Escudo Temporal y Cámara Lenta ───────────────────
+// ── Power-ups: Disparo Triple, Escudo Temporal, Cámara Lenta y Bomba Nova ───────
 const POWERUP_TTL          = 12;   // segundos en pantalla antes de desaparecer si no se recoge
 const DROP_CHANCE          = 0.18; // prob. de soltar un power-up al destruir un asteroide (antes de forzarlo)
 const TRIPLE_SHOT_DURATION = 15;   // segundos que dura el disparo triple tras recogerlo
 const SHIELD_DURATION      = 5;    // segundos que dura el escudo tras recogerlo (o hasta absorber un golpe)
 const SLOW_MOTION_DURATION = 6;    // segundos que dura la cámara lenta tras recogerla
 const SLOW_MOTION_FACTOR   = 0.5;  // multiplicador de velocidad de los asteroides durante la cámara lenta
+const NOVA_DROP_CHANCE     = 0.035; // prob. de soltar la Bomba Nova al destruir un asteroide; sorteo aparte del trío de abajo, y más bajo porque es un ítem escaso
+const NOVA_MAX_HELD        = 1;    // de un solo uso: no se puede llevar más de una en reserva a la vez
 
 const POWERUP_TYPES = ['triple', 'shield', 'slowmo'];
 
@@ -312,7 +315,7 @@ class PowerUp {
   constructor(x, y, type = 'triple') {
     this.x      = x;
     this.y      = y;
-    this.type   = type; // 'triple' | 'shield' | 'slowmo'
+    this.type   = type; // 'triple' | 'shield' | 'slowmo' | 'nova'
     this.radius = 14;
     this.rot    = 0;
     this.pulse  = rand(0, Math.PI * 2);
@@ -331,6 +334,7 @@ class PowerUp {
     const scale = 1 + Math.sin(this.pulse * 5) * 0.12;
     const color = this.type === 'shield' ? '#5ecbff'
                 : this.type === 'slowmo' ? '#b388ff'
+                : this.type === 'nova'   ? '#ff8a3d'
                 : '#fff';
     ctx.save();
     ctx.translate(this.x, this.y);
@@ -365,6 +369,15 @@ class PowerUp {
       ctx.lineTo(6, 7);
       ctx.closePath();
       ctx.stroke();
+    } else if (this.type === 'nova') {
+      // Icono: rayos en estallido que sugieren la onda expansiva de la bomba
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.moveTo(Math.cos(a) * 3, Math.sin(a) * 3);
+        ctx.lineTo(Math.cos(a) * 8, Math.sin(a) * 8);
+        ctx.stroke();
+      }
     } else {
       // Icono: tres marcas en abanico que sugieren el disparo triple
       for (const a of [-0.35, 0, 0.35]) {
@@ -392,6 +405,7 @@ let state;      // 'playing' | 'dead' | 'gameover'
 let deadTimer;
 let powerUpSpawnedThisLevel; // true en cuanto el power-up (disparo triple, escudo o cámara lenta) ya apareció en el nivel actual
 let lastPowerUpType; // tipo del último power-up generado; se excluye del siguiente sorteo para no repetir
+let novaFlashTimer; // segundos restantes del destello de pantalla al detonar la Bomba Nova
 
 function spawnAsteroids(count) {
   const SAFE_DIST = 130;
@@ -417,6 +431,7 @@ function initGame() {
   state  = 'playing';
   powerUpSpawnedThisLevel = false;
   lastPowerUpType = null;
+  novaFlashTimer = 0;
   spawnAsteroids(4);
 }
 
@@ -454,6 +469,8 @@ function killShip() {
 
 // ── Update ────────────────────────────────────────────────────────────────────
 function update(dt) {
+  if (novaFlashTimer > 0) novaFlashTimer = Math.max(0, novaFlashTimer - dt);
+
   if (state === 'gameover') {
     if (pressed('Space')) initGame();
     particles.forEach(p => p.update(dt));
@@ -476,6 +493,18 @@ function update(dt) {
   // Disparar
   if (pressed('Space')) {
     bullets.push(...ship.tryShoot());
+  }
+
+  // Bomba Nova: un solo uso, destruye de golpe todos los asteroides visibles
+  // en pantalla (sin generar fragmentos, a diferencia de un impacto normal).
+  if (pressed('KeyB') && ship.novaBombs > 0 && !ship.dead) {
+    ship.novaBombs--;
+    for (const a of asteroids) {
+      score += POINTS[a.size];
+      explode(a.x, a.y, a.size * 6);
+    }
+    asteroids = [];
+    novaFlashTimer = 0.25;
   }
 
   ship.update(dt);
@@ -509,6 +538,13 @@ function update(dt) {
           lastPowerUpType = randomPowerUpType(lastPowerUpType);
           powerUps.push(new PowerUp(a.x, a.y, lastPowerUpType));
           powerUpSpawnedThisLevel = true;
+        }
+
+        // Bomba Nova: sorteo aparte y más escaso, limitado a como mucho una en
+        // reserva y una en pantalla a la vez (ítem de un solo uso).
+        if (ship.novaBombs < NOVA_MAX_HELD && !powerUps.some(p => p.type === 'nova')
+            && Math.random() < NOVA_DROP_CHANCE) {
+          powerUps.push(new PowerUp(a.x, a.y, 'nova'));
         }
       }
     }
@@ -551,6 +587,8 @@ function update(dt) {
         ship.shield = SHIELD_DURATION;
       } else if (p.type === 'slowmo') {
         ship.slowMotion = SLOW_MOTION_DURATION;
+      } else if (p.type === 'nova') {
+        ship.novaBombs = Math.min(ship.novaBombs + 1, NOVA_MAX_HELD);
       } else {
         ship.tripleShot = TRIPLE_SHOT_DURATION;
       }
@@ -602,6 +640,8 @@ function drawHUD() {
     indicators.push({ text: `ESCUDO  ${ship.shield.toFixed(1)}s`, color: 'rgba(93,203,255,0.85)' });
   if (ship.slowMotion > 0)
     indicators.push({ text: `CÁMARA LENTA  ${ship.slowMotion.toFixed(1)}s`, color: 'rgba(179,136,255,0.85)' });
+  if (ship.novaBombs > 0)
+    indicators.push({ text: `BOMBA NOVA LISTA — B`, color: 'rgba(255,138,61,0.9)' });
 
   ctx.textAlign = 'center';
   ctx.font      = '13px monospace';
@@ -634,6 +674,12 @@ function draw() {
   // Tinte sutil de pantalla mientras la cámara lenta está activa
   if (ship.slowMotion > 0) {
     ctx.fillStyle = 'rgba(140, 100, 255, 0.06)';
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // Destello breve al detonar la Bomba Nova, se atenúa hasta desvanecerse
+  if (novaFlashTimer > 0) {
+    ctx.fillStyle = `rgba(255, 170, 80, ${(novaFlashTimer / 0.25 * 0.5).toFixed(2)})`;
     ctx.fillRect(0, 0, W, H);
   }
 
