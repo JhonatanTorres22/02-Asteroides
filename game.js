@@ -147,6 +147,7 @@ class Asteroid {
 class Ship {
   constructor() {
     this.tripleShot = 0; // segundos restantes de disparo triple; no se reinicia en reset()
+    this.shield     = 0; // segundos restantes de escudo; no se reinicia en reset()
     this.reset();
   }
 
@@ -168,6 +169,7 @@ class Ship {
     if (this.invincible    > 0) this.invincible    -= dt;
     if (this.shootCooldown > 0) this.shootCooldown -= dt;
     if (this.tripleShot    > 0) this.tripleShot    -= dt;
+    if (this.shield        > 0) this.shield        -= dt;
 
     const ROT   = 3.5;   // rad/s
     const THRUST = 260;  // px/s²
@@ -211,6 +213,19 @@ class Ship {
     if (this.dead) return;
     // Parpadeo durante invencibilidad de reaparición
     if (this.invincible > 0 && Math.floor(this.invincible * 8) % 2 === 0) return;
+
+    // Escudo temporal: anillo de energía pulsante alrededor de la nave
+    if (this.shield > 0) {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      const pulse = 1 + Math.sin(this.shield * 10) * 0.05;
+      ctx.beginPath();
+      ctx.arc(0, 0, (this.radius + 9) * pulse, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(93, 203, 255, 0.8)';
+      ctx.lineWidth   = 2;
+      ctx.stroke();
+      ctx.restore();
+    }
 
     ctx.save();
     ctx.translate(this.x, this.y);
@@ -274,15 +289,21 @@ class Particle {
   }
 }
 
-// ── Power-up: Disparo Triple ────────────────────────────────────────────────────
+// ── Power-ups: Disparo Triple y Escudo Temporal ─────────────────────────────────
 const POWERUP_TTL          = 12;   // segundos en pantalla antes de desaparecer si no se recoge
-const DROP_CHANCE          = 0.18; // prob. de soltar el power-up al destruir un asteroide (antes de forzarlo)
+const DROP_CHANCE          = 0.18; // prob. de soltar un power-up al destruir un asteroide (antes de forzarlo)
 const TRIPLE_SHOT_DURATION = 15;   // segundos que dura el disparo triple tras recogerlo
+const SHIELD_DURATION      = 5;    // segundos que dura el escudo tras recogerlo (o hasta absorber un golpe)
+
+function randomPowerUpType() {
+  return Math.random() < 0.5 ? 'triple' : 'shield';
+}
 
 class PowerUp {
-  constructor(x, y) {
+  constructor(x, y, type = 'triple') {
     this.x      = x;
     this.y      = y;
+    this.type   = type; // 'triple' | 'shield'
     this.radius = 14;
     this.rot    = 0;
     this.pulse  = rand(0, Math.PI * 2);
@@ -299,11 +320,12 @@ class PowerUp {
 
   draw() {
     const scale = 1 + Math.sin(this.pulse * 5) * 0.12;
+    const color = this.type === 'shield' ? '#5ecbff' : '#fff';
     ctx.save();
     ctx.translate(this.x, this.y);
     ctx.scale(scale, scale);
-    ctx.strokeStyle = '#fff';
-    ctx.fillStyle   = '#fff';
+    ctx.strokeStyle = color;
+    ctx.fillStyle   = color;
     ctx.lineWidth   = 1.5;
 
     // Círculo contenedor
@@ -311,19 +333,32 @@ class PowerUp {
     ctx.arc(0, 0, this.radius, 0, Math.PI * 2);
     ctx.stroke();
 
-    // Icono: tres marcas en abanico que sugieren el disparo triple
     ctx.rotate(this.rot);
-    for (const a of [-0.35, 0, 0.35]) {
-      ctx.save();
-      ctx.rotate(a);
+    if (this.type === 'shield') {
+      // Icono: escudo dentro del círculo
       ctx.beginPath();
       ctx.moveTo(0, -7);
-      ctx.lineTo(0, 2);
+      ctx.lineTo(6, -4);
+      ctx.lineTo(6,  3);
+      ctx.quadraticCurveTo(6, 7, 0, 9);
+      ctx.quadraticCurveTo(-6, 7, -6, 3);
+      ctx.lineTo(-6, -4);
+      ctx.closePath();
       ctx.stroke();
-      ctx.beginPath();
-      ctx.arc(0, -7, 1.6, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.restore();
+    } else {
+      // Icono: tres marcas en abanico que sugieren el disparo triple
+      for (const a of [-0.35, 0, 0.35]) {
+        ctx.save();
+        ctx.rotate(a);
+        ctx.beginPath();
+        ctx.moveTo(0, -7);
+        ctx.lineTo(0, 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(0, -7, 1.6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      }
     }
 
     ctx.restore();
@@ -335,7 +370,7 @@ let ship, bullets, asteroids, particles, powerUps;
 let score, lives, level;
 let state;      // 'playing' | 'dead' | 'gameover'
 let deadTimer;
-let powerUpSpawnedThisLevel; // true en cuanto el power-up de disparo triple ya apareció en el nivel actual
+let powerUpSpawnedThisLevel; // true en cuanto el power-up (disparo triple o escudo) ya apareció en el nivel actual
 
 function spawnAsteroids(count) {
   const SAFE_DIST = 130;
@@ -384,6 +419,7 @@ function killShip() {
   explode(ship.x, ship.y, 14);
   ship.dead = true;
   ship.tripleShot = 0; // morir cancela el disparo triple: se reaparece con disparo normal
+  ship.shield = 0;     // morir cancela el escudo: se reaparece sin escudo
   lives--;
   if (lives <= 0) {
     state = 'gameover';
@@ -441,10 +477,10 @@ function update(dt) {
         newAsteroids.push(...a.split());
         lastKillPos = { x: a.x, y: a.y };
 
-        // Power-up de disparo triple: intento aleatorio por cada asteroide
-        // destruido (como mucho una vez por nivel).
+        // Power-up (disparo triple o escudo, al azar): intento aleatorio por
+        // cada asteroide destruido (como mucho una vez por nivel).
         if (!powerUpSpawnedThisLevel && Math.random() < DROP_CHANCE) {
-          powerUps.push(new PowerUp(a.x, a.y));
+          powerUps.push(new PowerUp(a.x, a.y, randomPowerUpType()));
           powerUpSpawnedThisLevel = true;
         }
       }
@@ -457,7 +493,7 @@ function update(dt) {
   // la posición del último asteroide destruido: garantiza al menos una
   // aparición por nivel.
   if (!powerUpSpawnedThisLevel && asteroids.length === 0 && lastKillPos) {
-    powerUps.push(new PowerUp(lastKillPos.x, lastKillPos.y));
+    powerUps.push(new PowerUp(lastKillPos.x, lastKillPos.y, randomPowerUpType()));
     powerUpSpawnedThisLevel = true;
   }
 
@@ -465,7 +501,15 @@ function update(dt) {
   if (ship.invincible <= 0) {
     for (const a of asteroids) {
       if (dist(ship, a) < ship.radius + a.radius * 0.82) {
-        killShip();
+        if (ship.shield > 0) {
+          // El escudo absorbe el golpe: se consume y da una breve gracia
+          // para no volver a chocar mientras sigue solapada con el asteroide.
+          ship.shield = 0;
+          ship.invincible = 1;
+          explode(ship.x, ship.y, 10);
+        } else {
+          killShip();
+        }
         break;
       }
     }
@@ -475,7 +519,11 @@ function update(dt) {
   for (const p of powerUps) {
     if (!p.dead && dist(ship, p) < ship.radius + p.radius) {
       p.dead = true;
-      ship.tripleShot = TRIPLE_SHOT_DURATION;
+      if (p.type === 'shield') {
+        ship.shield = SHIELD_DURATION;
+      } else {
+        ship.tripleShot = TRIPLE_SHOT_DURATION;
+      }
       explode(p.x, p.y, 10);
     }
   }
@@ -522,6 +570,15 @@ function drawHUD() {
     ctx.fillStyle = 'rgba(255,255,255,0.85)';
     ctx.font      = '13px monospace';
     ctx.fillText(`DISPARO TRIPLE  ${ship.tripleShot.toFixed(1)}s`, W / 2, 46);
+  }
+
+  // Indicador de escudo activo (debajo del de disparo triple si ambos coinciden)
+  if (ship.shield > 0) {
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(93,203,255,0.85)';
+    ctx.font      = '13px monospace';
+    const y = ship.tripleShot > 0 ? 64 : 46;
+    ctx.fillText(`ESCUDO  ${ship.shield.toFixed(1)}s`, W / 2, y);
   }
 }
 
